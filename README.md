@@ -2,6 +2,12 @@
 
 Schedule a Claude Code session to start (or resume) after a delay, once your Mac is awake. Useful for waiting for Claude rate-limits to reset.
 
+<img src="images/rate-limit-options.png" alt="Claude Code's /rate-limit-options dialog after hitting the limit" width="600">
+
+<br>
+
+<img src="images/motivating-example.png" alt="Quitting and scheduling a resume for when the limit resets" width="600">
+
 Three commands ship together:
 
 - `claude-in <duration> <prompt>` — schedule a *fresh* Claude session.
@@ -55,7 +61,7 @@ claude-resume-in 4h30m "Continue."   # auto-resolve to most recent session
 schedule-network-task [--gate host:port] <duration> <cmd> [args...]
 ```
 
-- **--gate** — TCP target to verify reachable (via `nc -z -G 3`) before running the command. Defaults to `1.1.1.1:443` (Cloudflare anycast — IP literal so DNS isn't required at wake, port 443 rarely firewalled). IPv6 addresses are not supported as written; use a hostname or IPv4 address.
+- **--gate** — TCP target to verify reachable (via `nc -z -G 3`) before running the command. Defaults to `1.1.1.1:443` (Cloudflare anycast). IPv6 addresses are not supported as written; use a hostname or IPv4 address.
 - **duration** — same compact format as above.
 - **cmd args** — command to `exec` once the timer fires and the network is up. Args are passed through verbatim, so quoting works as you'd expect.
 
@@ -65,7 +71,7 @@ schedule-network-task --gate api.anthropic.com:443 4h30m claude -- "Continue."
 schedule-network-task --gate github.com:443 5m git push
 ```
 
-Useful instead of `cron` when the machine may be asleep at the scheduled time (the timer is wall-clock-anchored and self-corrects after suspend) or when you want to ensure the network is actually reachable before the command runs.
+Useful instead of `cron` when the machine may be asleep at the scheduled time (schedule-network-task's timer fires as soon as possible after suspend) or when you want to ensure the network is actually reachable before the command runs.
 
 ## How it works
 
@@ -75,5 +81,5 @@ Useful instead of `cron` when the machine may be asleep at the scheduled time (t
 
 ## Notes
 
-- Run in a terminal you'll leave open, or inside `tmux`/`screen`.
+- Run in a terminal you'll leave open, or inside `tmux`.
 - Indefinite network outage at wake time will loop forever waiting for connectivity.
