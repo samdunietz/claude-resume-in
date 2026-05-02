@@ -5,11 +5,18 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 # shellcheck disable=SC1091
 source ./schedule-network-task
 
+verbose=0
+case "${1:-}" in
+  -v|--verbose) verbose=1; shift ;;
+esac
+
+say() { (( verbose )) && printf '%s\n' "$*"; return 0; }
+
 fail=0
 assert_eq() {
   local expected=$1 actual=$2 desc=$3
   if [[ $expected == "$actual" ]]; then
-    printf "  ok: %s\n" "$desc"
+    say "  ok: $desc"
   else
     printf "  FAIL: %s — expected %q, got %q\n" "$desc" "$expected" "$actual"
     fail=1
@@ -31,10 +38,10 @@ assert_rejects() {
     fail=1
     return
   fi
-  printf "  ok: %s\n" "$desc"
+  say "  ok: $desc"
 }
 
-echo "parse_duration:"
+say "parse_duration:"
 assert_eq 60      "$(parse_duration 60)"          "plain seconds: 60 → 60"
 assert_eq 0       "$(parse_duration 0)"           "plain zero → 0 (caller rejects)"
 assert_eq 45      "$(parse_duration 45s)"         "45s"
@@ -52,8 +59,8 @@ assert_eq 0       "$(parse_duration xyz)"         "garbage → 0"
 assert_eq 0       "$(parse_duration 1xyz)"        "trailing garbage → 0"
 assert_eq 0       "$(parse_duration 30m1h)"       "out of order → 0"
 
-echo
-echo "human_duration:"
+say
+say "human_duration:"
 assert_eq ""         "$(human_duration 0)"     "0 → empty"
 assert_eq "1s"       "$(human_duration 1)"     "1 → 1s"
 assert_eq "1m"       "$(human_duration 60)"    "60 → 1m"
@@ -64,8 +71,8 @@ assert_eq "4h30m"    "$(human_duration 16200)" "16200 → 4h30m"
 assert_eq "1m30s"    "$(human_duration 90)"    "90 → 1m30s (skip h, d)"
 assert_eq "1h1m1s"   "$(human_duration 3661)"  "3661 → 1h1m1s (skip d)"
 
-echo
-echo "schedule-network-task host:port validation:"
+say
+say "schedule-network-task host:port validation:"
 assert_rejects "missing host:port arg"   "Usage:"             ./schedule-network-task 1s
 assert_rejects "empty host"              "invalid host:port"  ./schedule-network-task 1s ":443" echo x
 assert_rejects "empty port"              "invalid host:port"  ./schedule-network-task 1s "x:"   echo x
@@ -75,8 +82,8 @@ assert_rejects "port too large"          "invalid host:port"  ./schedule-network
 assert_rejects "no colon"                "invalid host:port"  ./schedule-network-task 1s "xyz"  echo x
 assert_rejects "invalid duration"        "invalid duration"   ./schedule-network-task xyz x:443 echo x
 
-echo
-echo "wait_for_network: survives unreachable target (regression: unbraced var before … tripped set -u):"
+say
+say "wait_for_network: survives unreachable target (regression: unbraced var before … tripped set -u):"
 out=$(
   ./schedule-network-task 1s 127.0.0.1:1 echo x 2>&1 &
   pid=$!
@@ -89,13 +96,13 @@ if [[ $out == *"unbound variable"* ]]; then
   printf "  FAIL: crashed with unbound variable\n  output: %s\n" "$out"
   fail=1
 elif [[ $out == *"Waiting for network"* ]]; then
-  printf "  ok: entered retry loop\n"
+  say "  ok: entered retry loop"
 else
   printf "  FAIL: never reached retry loop\n  output: %s\n" "$out"
   fail=1
 fi
 
-echo
+say
 if (( fail )); then
   echo "FAILED"
   exit 1
