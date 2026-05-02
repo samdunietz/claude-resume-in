@@ -41,6 +41,16 @@ assert_rejects() {
   say "  ok: $desc"
 }
 
+assert_contains() {
+  local needle=$1 haystack=$2 desc=$3
+  if [[ $haystack == *"$needle"* ]]; then
+    say "  ok: $desc"
+  else
+    printf "  FAIL: %s — output missing %q\n" "$desc" "$needle"
+    fail=1
+  fi
+}
+
 say "parse_duration:"
 assert_eq 60      "$(parse_duration 60)"          "plain seconds: 60 → 60"
 assert_eq 0       "$(parse_duration 0)"           "plain zero → 0 (caller rejects)"
@@ -72,20 +82,46 @@ assert_eq "1m30s"    "$(human_duration 90)"    "90 → 1m30s (skip h, d)"
 assert_eq "1h1m1s"   "$(human_duration 3661)"  "3661 → 1h1m1s (skip d)"
 
 say
-say "schedule-network-task host:port validation:"
-assert_rejects "missing host:port arg"   "Usage:"             ./schedule-network-task 1s
-assert_rejects "empty host"              "invalid host:port"  ./schedule-network-task 1s ":443" echo x
-assert_rejects "empty port"              "invalid host:port"  ./schedule-network-task 1s "x:"   echo x
-assert_rejects "non-numeric port"        "invalid host:port"  ./schedule-network-task 1s "x:ab" echo x
-assert_rejects "port 0 out of range"     "invalid host:port"  ./schedule-network-task 1s "x:0"  echo x
-assert_rejects "port too large"          "invalid host:port"  ./schedule-network-task 1s "x:65536" echo x
-assert_rejects "no colon"                "invalid host:port"  ./schedule-network-task 1s "xyz"  echo x
-assert_rejects "invalid duration"        "invalid duration"   ./schedule-network-task xyz x:443 echo x
+say "schedule-network-task input validation:"
+assert_rejects "no args (Usage)"         "Usage:"             ./schedule-network-task
+assert_rejects "duration only"           "missing command"    ./schedule-network-task 1s
+assert_rejects "unknown flag"            "unknown flag"       ./schedule-network-task --bogus 1s echo x
+assert_rejects "--gate without value"    "requires"           ./schedule-network-task --gate
+assert_rejects "--gate followed by flag" "requires"           ./schedule-network-task --gate --bogus 1s echo x
+assert_rejects "empty host"              "invalid host:port"  ./schedule-network-task --gate ":443" 1s echo x
+assert_rejects "empty port"              "invalid host:port"  ./schedule-network-task --gate "x:"   1s echo x
+assert_rejects "non-numeric port"        "invalid host:port"  ./schedule-network-task --gate "x:ab" 1s echo x
+assert_rejects "port 0 out of range"     "invalid host:port"  ./schedule-network-task --gate "x:0"  1s echo x
+assert_rejects "port too large"          "invalid host:port"  ./schedule-network-task --gate "x:65536" 1s echo x
+assert_rejects "no colon in --gate"      "invalid host:port"  ./schedule-network-task --gate "xyz"  1s echo x
+assert_rejects "command not found"       "command not found"  ./schedule-network-task 1s nonexistent_cmd_xyz
+assert_rejects "invalid duration"        "invalid duration"   ./schedule-network-task --gate x:443 xyz echo x
+
+say
+say "schedule-network-task default gate (1.1.1.1:443) when host:port omitted:"
+stub_dir=$(mktemp -d)
+nc_log=$(mktemp)
+cat > "$stub_dir/nc" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "$NC_LOG"
+exit 0
+EOF
+chmod +x "$stub_dir/nc"
+
+# `|| true` so a non-zero exit (or set -e tripping inside) doesn't skip
+# cleanup below — the assertions surface any actual failure.
+out=$(NC_LOG=$nc_log PATH="$stub_dir:$PATH" ./schedule-network-task 1s echo gated 2>&1) || true
+
+assert_contains "gating on 1.1.1.1:443" "$out"             "default gate appears in diagnostic"
+assert_contains "gated"                  "$out"             "command exec'd after gate"
+assert_contains "1.1.1.1 443"            "$(cat "$nc_log")" "nc called with default target"
+
+rm -rf "$stub_dir" "$nc_log"
 
 say
 say "wait_for_network: survives unreachable target (regression: unbraced var before … tripped set -u):"
 out=$(
-  ./schedule-network-task 1s 127.0.0.1:1 echo x 2>&1 &
+  ./schedule-network-task --gate 127.0.0.1:1 1s echo x 2>&1 &
   pid=$!
   sleep 2
   kill $pid 2>/dev/null

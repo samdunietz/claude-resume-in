@@ -39,4 +39,4 @@ fi
 echo "Starting fresh session."
 echo "Prompt: $prompt"
 
-exec "$script_dir/schedule-network-task" "$seconds" api.anthropic.com:443 claude -- "$prompt"
+exec "$script_dir/schedule-network-task" --gate api.anthropic.com:443 "$seconds" claude -- "$prompt"

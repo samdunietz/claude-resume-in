@@ -70,30 +70,54 @@ wait_for_network() {
 set -euo pipefail
 prog=${BASH_SOURCE[0]##*/}
 
-if [[ $# -lt 3 ]]; then
+usage() {
   cat >&2 <<EOF
-Usage: $prog <duration> <host:port> <cmd> [args...]
+Usage: $prog [--gate HOST:PORT] <duration> <cmd> [args...]
 
+  --gate:    TCP target to verify reachable before running the command.
+             Defaults to 1.1.1.1:443. IPv6 not supported.
   duration:  compact format like 5d10h30m30s, 4h30m, 90m, 45s,
              or plain seconds (3600). Units must be in d→h→m→s order.
-  host:port: TCP target to verify reachable before running the command.
-             IPv6 not supported — pass a hostname or IPv4 address.
   cmd args:  command to exec once the timer fires and the network is up.
 
-Example:
-  $prog 4h30m api.anthropic.com:443 claude -- "Continue."
+Examples:
+  $prog --gate api.anthropic.com:443 4h30m claude -- "Continue."
+  $prog 8h brew upgrade            # uses default --gate 1.1.1.1:443
 
 Notes:
   - Run in a terminal you'll leave open (or inside tmux/screen for safety).
   - System sleep is fine — the timer self-corrects against wall clock.
   - Network outage at wake time loops forever waiting for connectivity.
 EOF
-  exit 1
+}
+
+host_port=1.1.1.1:443
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --gate=*) host_port=${1#--gate=}; shift ;;
+    --gate)
+      [[ $# -ge 2 && $2 != -* ]] || { echo "$prog: --gate requires a HOST:PORT argument" >&2; exit 1; }
+      host_port=$2; shift 2 ;;
+    --) shift; break ;;
+    -*) echo "$prog: unknown flag: $1" >&2; exit 1 ;;
+    *)  break ;;
+  esac
+done
+
+if (( $# == 0 )); then
+  usage; exit 1
 fi
 
 duration_str=$1
-host_port=$2
-shift 2
+shift
+
+if (( $# == 0 )); then
+  echo "$prog: missing command" >&2
+  exit 1
+elif ! command -v -- "$1" >/dev/null 2>&1; then
+  echo "$prog: command not found: $1" >&2
+  exit 1
+fi
 
 seconds=$(parse_duration "$duration_str")
 if (( seconds <= 0 )); then
@@ -116,7 +140,7 @@ human=$(human_duration "$seconds")
 
 printf 'Will run: '
 printf '%q ' "$@"
-printf 'at %s (in %s)\n' "$target_str" "$human"
+printf 'at %s (in %s), gating on %s\n' "$target_str" "$human" "$host_port"
 echo "Sleeping. Don't close this window — or run inside tmux for safety."
 echo
 
