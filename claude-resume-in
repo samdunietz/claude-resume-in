@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+prog=${BASH_SOURCE[0]##*/}
+
+# Resolve sibling schedule-network-task through any symlink install.
+script_dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+# shellcheck source=schedule-network-task
+source "$script_dir/schedule-network-task"
+
 if [[ $# -gt 3 ]]; then
-  echo "claude-resume-in: too many arguments — pass the prompt as a single quoted string" >&2
-  echo "  example: claude-resume-in 4h30m \"Continue this work.\"" >&2
+  echo "$prog: too many arguments — pass the prompt as a single quoted string" >&2
+  echo "  example: $prog 4h30m \"Continue this work.\"" >&2
   exit 1
 fi
 
@@ -26,13 +33,13 @@ Examples:
 Notes:
   - Run in a terminal you'll leave open (or inside tmux/screen for safety).
   - System sleep is fine — the timer self-corrects against wall clock.
+  - To start a fresh session instead of resuming, use \`claude-in\`.
 EOF
   exit 1
 fi
 
 duration_str=$1
 session_id=""
-prompt=""
 auto_resolved=0
 
 # 2 args: $2 is the prompt, session is auto-resolved from cwd.
@@ -40,104 +47,51 @@ auto_resolved=0
 uuid_re='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
 if [[ $# -ge 3 ]]; then
   if [[ ! $2 =~ $uuid_re ]]; then
-    echo "claude-resume-in: '$2' isn't a session UUID" >&2
+    echo "$prog: '$2' isn't a session UUID" >&2
     exit 1
   fi
   session_id=$2
   prompt=$3
 else
   if [[ $2 =~ $uuid_re ]]; then
-    echo "claude-resume-in: prompt is required (got session-id but no prompt)" >&2
+    echo "$prog: prompt is required (got session-id but no prompt)" >&2
     exit 1
   fi
   prompt=$2
+fi
+
+# Validate duration before any side-effecting work below (e.g. session
+# auto-resolution), so a bad duration surfaces as "invalid duration" rather
+# than getting masked by "no prior session" in an empty cwd.
+seconds=$(parse_duration "$duration_str")
+if (( seconds <= 0 )); then
+  echo "$prog: invalid duration: $duration_str" >&2
+  exit 1
 fi
 
 # Eager --continue: snapshot the most-recent session now so a session started
 # in this cwd during the sleep window can't shadow the one we meant to resume.
 # Project dir encoding mirrors Claude Code: cwd with `/` and `.` → `-`.
 if [[ -z $session_id ]]; then
-  project_dir="$HOME/.claude/projects/$(pwd | sed 's:[/.]:-:g')"
+  project_dir="$HOME/.claude/projects/${PWD//[\/.]/-}"
   # `|| true` keeps set -e + pipefail from aborting when the dir doesn't
   # exist or has no .jsonl files — we want to fall through to the friendly
   # error message below, not die silently.
+  # shellcheck disable=SC2012  # filenames are UUIDs; ls -t is safe and shorter than the find equivalent
   latest=$(ls -t "$project_dir"/*.jsonl 2>/dev/null | head -1) || true
   [[ -n $latest ]] && session_id=$(basename "$latest" .jsonl)
   if [[ -z $session_id ]]; then
-    echo "claude-resume-in: no prior session in $(pwd) to continue" >&2
+    echo "$prog: no prior session in $(pwd) to continue" >&2
     exit 1
   fi
   auto_resolved=1
 fi
 
-parse_duration() {
-  local input=$1 total=0
-  # Plain integer = seconds.
-  if [[ $input =~ ^[0-9]+$ ]]; then
-    echo "$input"; return
-  fi
-  # Strict structural match: <N>d<N>h<N>m<N>s in order, each piece optional,
-  # at least one piece required. Rejects junk like "1xyz" or "30m1h".
-  if ! [[ $input =~ ^([0-9]+[dD])?([0-9]+[hH])?([0-9]+[mM])?([0-9]+[sS])?$ ]] \
-     || [[ -z $input ]]; then
-    echo "0"; return
-  fi
-  [[ $input =~ ([0-9]+)[dD] ]] && total=$((total + ${BASH_REMATCH[1]} * 86400))
-  [[ $input =~ ([0-9]+)[hH] ]] && total=$((total + ${BASH_REMATCH[1]} * 3600))
-  [[ $input =~ ([0-9]+)[mM] ]] && total=$((total + ${BASH_REMATCH[1]} * 60))
-  [[ $input =~ ([0-9]+)[sS] ]] && total=$((total + ${BASH_REMATCH[1]}))
-  echo "$total"
-}
-
-seconds=$(parse_duration "$duration_str")
-if (( seconds <= 0 )); then
-  echo "claude-resume-in: invalid duration: $duration_str" >&2
-  exit 1
-fi
-
-now=$(date +%s)
-target=$(( now + seconds ))
-target_str=$(date -r "$target" "+%a %Y-%m-%d %H:%M:%S")
-
-d=$(( seconds / 86400 ))
-h=$(( (seconds % 86400) / 3600 ))
-m=$(( (seconds % 3600) / 60 ))
-s=$(( seconds % 60 ))
-human=""
-(( d > 0 )) && human+="${d}d"
-(( h > 0 )) && human+="${h}h"
-(( m > 0 )) && human+="${m}m"
-(( s > 0 )) && human+="${s}s"
-
 if (( auto_resolved )); then
-  echo "Resuming most recent session (${session_id:0:8}…) at $target_str (in $human)"
+  echo "Resuming most recent session (${session_id:0:8}…)"
 else
-  echo "Resuming session ${session_id:0:8}… at $target_str (in $human)"
+  echo "Resuming session ${session_id:0:8}…"
 fi
 echo "Prompt: $prompt"
-echo "Sleeping. Don't close this window — or run inside tmux for safety."
-echo
 
-# Wall-clock-anchored sleep, in 60-second chunks. macOS's sleep(1) doesn't
-# advance through system suspend, so a single long sleep would extend wake-up
-# by the suspend duration. Re-anchoring against $(date +%s) (wall clock) every
-# ≤60s lets the loop self-correct within one chunk after wake.
-while :; do
-  remaining=$(( target - $(date +%s) ))
-  (( remaining <= 0 )) && break
-  (( remaining > 60 )) && remaining=60
-  sleep "$remaining"
-done
-
-# Wait for network — claude --resume needs to reach the API. If we just woke
-# from sleep on wifi that hasn't reconnected yet, fail-fast would be a footgun.
-shown_waiting=0
-while ! nc -z -G 3 api.anthropic.com 443 2>/dev/null; do
-  if (( shown_waiting == 0 )); then
-    echo "Waiting for network to reach api.anthropic.com…"
-    shown_waiting=1
-  fi
-  sleep 5
-done
-
-exec claude --resume "$session_id" "$prompt"
+exec "$script_dir/schedule-network-task" "$seconds" api.anthropic.com:443 claude --resume "$session_id" -- "$prompt"

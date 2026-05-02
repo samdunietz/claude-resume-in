@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+prog=${BASH_SOURCE[0]##*/}
+
+# Resolve sibling schedule-network-task through any symlink install.
+script_dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+# shellcheck source=schedule-network-task
+source "$script_dir/schedule-network-task"
+
+if [[ $# -ne 2 ]]; then
+  cat >&2 <<EOF
+Usage: claude-in <duration> <prompt>
+
+  duration: compact format like 5d10h30m30s, 4h30m, 90m, 45s,
+            or plain seconds (3600). Units must be in d→h→m→s order.
+  prompt:   first message to send when the session starts (required).
+
+Example:
+  claude-in 4h30m "Start with fresh context."
+
+Notes:
+  - Run in a terminal you'll leave open (or inside tmux/screen for safety).
+  - System sleep is fine — the timer self-corrects against wall clock.
+  - To resume an existing session instead, use \`claude-resume-in\`.
+EOF
+  exit 1
+fi
+
+duration_str=$1
+prompt=$2
+
+seconds=$(parse_duration "$duration_str")
+if (( seconds <= 0 )); then
+  echo "$prog: invalid duration: $duration_str" >&2
+  exit 1
+fi
+
+echo "Starting fresh session."
+echo "Prompt: $prompt"
+
+exec "$script_dir/schedule-network-task" "$seconds" api.anthropic.com:443 claude -- "$prompt"

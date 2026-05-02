@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+
+parse_duration() {
+  local input=$1 total=0
+  # Plain integer = seconds.
+  if [[ $input =~ ^[0-9]+$ ]]; then
+    echo "$input"; return
+  fi
+  # Strict structural match: <N>d<N>h<N>m<N>s in order, each piece optional,
+  # at least one piece required. Rejects junk like "1xyz" or "30m1h".
+  if ! [[ $input =~ ^([0-9]+[dD])?([0-9]+[hH])?([0-9]+[mM])?([0-9]+[sS])?$ ]] \
+     || [[ -z $input ]]; then
+    echo "0"; return
+  fi
+  [[ $input =~ ([0-9]+)[dD] ]] && total=$((total + BASH_REMATCH[1] * 86400))
+  [[ $input =~ ([0-9]+)[hH] ]] && total=$((total + BASH_REMATCH[1] * 3600))
+  [[ $input =~ ([0-9]+)[mM] ]] && total=$((total + BASH_REMATCH[1] * 60))
+  [[ $input =~ ([0-9]+)[sS] ]] && total=$((total + BASH_REMATCH[1]))
+  echo "$total"
+}
+
+human_duration() {
+  local seconds=$1
+  local d=$(( seconds / 86400 ))
+  local h=$(( (seconds % 86400) / 3600 ))
+  local m=$(( (seconds % 3600) / 60 ))
+  local s=$(( seconds % 60 ))
+  local out=""
+  (( d > 0 )) && out+="${d}d"
+  (( h > 0 )) && out+="${h}h"
+  (( m > 0 )) && out+="${m}m"
+  (( s > 0 )) && out+="${s}s"
+  echo "$out"
+}
+
+# Wall-clock-anchored sleep, in 60-second chunks. macOS's sleep(1) doesn't
+# advance through system suspend, so a single long sleep would extend wake-up
+# by the suspend duration. Re-anchoring against $(date +%s) (wall clock) every
+# ≤60s lets the loop self-correct within one chunk after wake.
+wait_until() {
+  local target=$1 remaining
+  while :; do
+    remaining=$(( target - $(date +%s) ))
+    (( remaining <= 0 )) && break
+    (( remaining > 60 )) && remaining=60
+    sleep "$remaining"
+  done
+}
+
+# Wait for network — if we just woke from sleep on wifi that hasn't
+# reconnected yet, fail-fast would be a footgun. Indefinite outage at wake
+# time will loop forever (callers accept this).
+wait_for_network() {
+  local host=$1 port=$2
+  local shown_waiting=0
+  while ! nc -z -G 3 "$host" "$port" 2>/dev/null; do
+    if (( shown_waiting == 0 )); then
+      echo "Waiting for network to reach ${host}:${port}…"
+      shown_waiting=1
+    fi
+    sleep 5
+  done
+}
+
+# Sourced as a library (by claude-in, claude-resume-in, or test.sh)?
+# Functions are defined; bail before main flow and shell-option setup so
+# sourcing doesn't mutate the caller's shell flags.
+[[ ${BASH_SOURCE[0]} != "$0" ]] && return 0
+
+set -euo pipefail
+prog=${BASH_SOURCE[0]##*/}
+
+if [[ $# -lt 3 ]]; then
+  cat >&2 <<EOF
+Usage: $prog <duration> <host:port> <cmd> [args...]
+
+  duration:  compact format like 5d10h30m30s, 4h30m, 90m, 45s,
+             or plain seconds (3600). Units must be in d→h→m→s order.
+  host:port: TCP target to verify reachable before running the command.
+             IPv6 not supported — pass a hostname or IPv4 address.
+  cmd args:  command to exec once the timer fires and the network is up.
+
+Example:
+  $prog 4h30m api.anthropic.com:443 claude -- "Continue."
+
+Notes:
+  - Run in a terminal you'll leave open (or inside tmux/screen for safety).
+  - System sleep is fine — the timer self-corrects against wall clock.
+  - Network outage at wake time loops forever waiting for connectivity.
+EOF
+  exit 1
+fi
+
+duration_str=$1
+host_port=$2
+shift 2
+
+seconds=$(parse_duration "$duration_str")
+if (( seconds <= 0 )); then
+  echo "$prog: invalid duration: $duration_str" >&2
+  exit 1
+fi
+
+host=${host_port%:*}
+port=${host_port##*:}
+if [[ -z $host || -z $port || $host == "$host_port" || ! $port =~ ^[0-9]+$ ]] \
+   || (( port < 1 || port > 65535 )); then
+  echo "$prog: invalid host:port: $host_port" >&2
+  exit 1
+fi
+
+now=$(date +%s)
+target=$(( now + seconds ))
+target_str=$(date -r "$target" "+%a %Y-%m-%d %H:%M:%S")
+human=$(human_duration "$seconds")
+
+printf 'Will run: '
+printf '%q ' "$@"
+printf 'at %s (in %s)\n' "$target_str" "$human"
+echo "Sleeping. Don't close this window — or run inside tmux for safety."
+echo
+
+wait_until "$target"
+wait_for_network "$host" "$port"
+
+exec "$@"
