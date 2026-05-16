@@ -75,11 +75,11 @@ Useful instead of `cron` when the machine may be asleep at the scheduled time (s
 
 ## How it works
 
-- **Wall-clock-anchored sleep.** `schedule-network-task` sleeps in 60-second chunks, re-anchoring against `date +%s` each iteration. macOS's `sleep(1)` doesn't advance through system suspend, so a single long sleep would extend wake-up by the suspend duration. The bounded chunks sidestep it: `date +%s` (wall clock) does advance through suspend, so after wake the loop catches up within ~60s of the wall-clock target. Thus, `claude-in 4h30m "…"` will fire within a minute of 4h30m after scheduling, even if your Mac sleeps in the interim.
-- **Network wait before exec.** After wake, wifi may not be reconnected yet. `schedule-network-task` polls the `--gate` target (or `1.1.1.1:443` by default) with a 3s connect timeout via `nc -G` before exec'ing the command. The `claude-*` wrappers pass `--gate api.anthropic.com:443`.
+- **Wall-clock-anchored sleep.** `schedule-network-task` sleeps in 60-second chunks, re-anchoring against `date +%s` each iteration. macOS's `sleep(1)` doesn't advance through system suspend, so a single long sleep would extend wake-up by the suspend duration. The bounded chunks sidestep it: `date +%s` (wall clock) does advance through suspend, so after wake the loop catches up within ~60s of the wall-clock target. Thus, `claude-in 4h30m "…"` will fire within a minute of 4h30m after scheduling — or, if your Mac is still asleep at that point, within a minute of when it next wakes.
+- **Network wait before exec.** After wake, wifi may not be reconnected yet. `schedule-network-task` waits to exec its command until it successfully reaches the `--gate` target (or `1.1.1.1:443` by default). The `claude-*` wrappers pass `--gate api.anthropic.com:443`. The TCP poll has a 3s timeout via `nc -G`.
 - **Eager session resolution (`claude-resume-in` only).** When the session ID is omitted, `claude-resume-in` captures the most-recent session UUID from the working directory at scheduling time, not wake time. A session started during the sleep window can't replace the one you meant to resume.
 
 ## Notes
 
-- Run in a terminal you'll leave open, or inside `tmux`.
+- Run inside `tmux` if you're over SSH or want to close the terminal window.
 - Indefinite network outage at wake time will loop forever waiting for connectivity.
